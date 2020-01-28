@@ -10,6 +10,7 @@ gym = "*"
 matplotlib = "*"
 torch = "*"
 ipykernel = "*"
+torchvision = "*"
 
 [requires]
 python_version = "3.7"
