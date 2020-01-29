@@ -18,6 +18,7 @@ Experience = namedtuple(
     ('state','action','next_state','reward')
 )
 
+
 class DQN(nn.Module):
     def __init__(self, img_height,img_width):
         super().__init__() 
@@ -95,14 +96,14 @@ class CartPoleEnvManager():
     def close(self):
         self.env.close()
     
-    def render(self, mode='human'):
+    def render(self, mode):
         return self.env.render(mode)
 
     def num_actions_available(self):
         return self.env.action_space.n
 
     def take_action(self,action):
-        _, reward, self.done = self.env.step(action.item())
+        _, reward, self.done,_ = self.env.step(action.item())
         return torch.tensor([reward], device=self.device)
 
     def just_starting(self):
@@ -150,7 +151,37 @@ class CartPoleEnvManager():
 
         return resize(screen).unsqueeze(0).to(self.device)
 
-'''
+def extract_tensors(experiences):
+    batch = Experience(*zip(*experiences))
+
+    t1 = torch.cat(batch.state)
+    t2 = torch.cat(batch.action)
+    t3 = torch.cat(batch.reward)
+    t4 = torch.cat(batch.next_state)
+
+    return (t1, t2, t3, t4)
+
+class QValues():
+    device = torch.device("cpu")
+
+    @staticmethod
+    def get_current(policy_net, states, actions):
+        return policy_net(states).gather(dim=1, index=actions.unsqueeze(-1))
+    
+    @staticmethod
+    def get_next(target_net, next_states):
+        final_state_locations = next_states.flatten(start_dim=1).max(dim=1)[0].eq(0).type(torch.bool)
+
+        non_final_state_locations = (final_state_locations == False)
+        non_final_states = next_states[non_final_state_locations]
+
+        batch_size = next_states.shape[0]
+
+        values = torch.zeros(batch_size).to(QValues.device)
+        values[non_final_state_locations] = target_net(non_final_states).max(dim=1)[0].detach()
+        return values
+
+
 def plot(values, moving_avg_period):
     plt.figure(2)
     plt.clf()
@@ -159,8 +190,7 @@ def plot(values, moving_avg_period):
     plt.ylabel('Duration')
     plt.plot(values)
     plt.plot(get_moving_average(moving_avg_period, values))
-    #plt.pause(10.001)
-    plt.show()
+    plt.pause(0.001)
 
 def get_moving_average(period, values):
     values = torch.tensor(values, dtype=torch.float)
@@ -172,8 +202,8 @@ def get_moving_average(period, values):
         moving_avg = torch.zeros(len(values))
         return moving_avg.numpy()
 
-plot(np.random.rand(300),100)
-'''
+#plot(np.random.rand(300),100)
+
 
 '''
 #### TEST
@@ -196,3 +226,68 @@ plt.imshow(screen.squeeze(0).permute(1,2,0), interpolation='none')
 plt.title("test")
 plt.show()
 '''
+
+
+# hyperparameter
+batch_size = 256
+gamma = 0.999
+epsilon_start = 1
+epsilon_end = 0.01
+epsilon_decay = 0.001
+target_update = 10
+memory_size = 100000
+learning_rate = 0.001
+number_episodes = 1000
+
+device = torch.device("cpu")
+em = CartPoleEnvManager(device)
+strategy = EpsilonGreedyStrategy(epsilon_start, epsilon_end,epsilon_decay)
+agent = Agent(strategy, em.num_actions_available(), device)
+memory = ReplayMemory(memory_size)
+
+policy_net = DQN(em.get_screen_height(), em.get_screen_width()).to(device)
+target_net = DQN(em.get_screen_height(), em.get_screen_width()).to(device)
+target_net.load_state_dict(policy_net.state_dict())
+target_net.eval()
+optimizer = optim.Adam(params=policy_net.parameters(),lr=learning_rate)
+
+
+
+episode_duration = []
+for episode in range(number_episodes):
+    em.reset()
+    state = em.get_state()
+
+    for timestep in count():
+        action = agent.select_action(state, policy_net)
+        reward = em.take_action(action)
+        next_state = em.get_state()
+        memory.push(Experience(state, action, next_state, reward))
+        state = next_state
+
+        if memory.can_provide_sample(batch_size):
+            experiences = memory.sample(batch_size)
+            states, actions, rewards, next_states = extract_tensors(experiences)
+            
+            current_q_values = QValues.get_current(policy_net, states,actions)
+            next_q_values = QValues.get_next(target_net, next_states)
+            target_q_values = (next_q_values * gamma) + rewards
+
+            loss = F.mse_loss(current_q_values, target_q_values.unsqueeze(1))
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+        if em.done:
+            episode_duration.append(timestep)
+            plot(episode_duration,100)
+            break
+    
+    if episode % target_update == 0:
+        print("update target_net")
+        target_net.load_state_dict(policy_net.state_dict())
+
+em.close()
+plot(episode_duration,100)
+
+print("__________DONE______________")
