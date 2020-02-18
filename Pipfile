@@ -11,6 +11,7 @@ matplotlib = "*"
 torch = "*"
 ipykernel = "*"
 torchvision = "*"
+recogym = "*"
 
 [requires]
 python_version = "3.7"
